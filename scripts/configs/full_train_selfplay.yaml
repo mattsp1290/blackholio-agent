@@ -1,0 +1,59 @@
+# Full training configuration with self-play and adaptive curriculum
+# This configuration demonstrates all advanced training features
+
+# Training duration
+total_timesteps: 10_000_000
+
+# Parallel environments
+n_envs: 16  # More environments for diverse experience
+env_host: "localhost:3000"
+env_database: "blackholio"
+
+# PPO hyperparameters
+learning_rate: 3.0e-4
+n_steps: 2048
+batch_size: 512  # Larger batch for stability
+n_epochs: 10
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+clip_range_vf: null  # No value function clipping
+normalize_advantage: true
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+
+# Device selection
+device: "auto"  # Will use CUDA/MPS if available
+
+# Curriculum learning
+use_curriculum: true
+adaptive_curriculum: true  # Enable adaptive progression
+
+# Self-play configuration
+use_self_play: true
+self_play_config:
+  pool_size: 15  # Keep more historical models
+  save_interval: 20000  # Save to pool every 20k steps
+  selection_strategy: "weighted"  # Prioritize less-played opponents
+  self_play_prob: 0.6  # 60% chance to play against self
+  track_win_rates: true
+  min_games_for_stats: 50
+opponent_pool_dir: "opponent_pool"
+
+# Logging and checkpointing
+log_dir: "logs/full_selfplay"
+checkpoint_dir: "checkpoints/full_selfplay"
+save_interval_minutes: 30.0
+console_log_interval: 10
+
+# Model configuration (optional overrides)
+model_config:
+  hidden_dim: 512
+  num_layers: 3
+  attention_heads: 8
+  max_entities: 50
+  entity_embedding_dim: 64
+  spatial_channels: 32
+  use_lstm: true  # Enable LSTM for temporal dependencies
+  lstm_hidden_dim: 256

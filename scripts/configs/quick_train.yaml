@@ -1,0 +1,47 @@
+# Quick training configuration for functional agent (1-2 hours)
+# Optimized for Apple M4 Max
+
+# Environment settings
+env_host: "localhost:3000"
+env_database: "blackholio"
+n_envs: 8  # 8 parallel agents
+
+# Training hyperparameters
+total_timesteps: 1_000_000  # ~1-2 hours on M4 Max
+learning_rate: 0.0003
+n_steps: 2048  # Steps before update
+batch_size: 256
+n_epochs: 4
+gamma: 0.99
+gae_lambda: 0.95
+clip_range: 0.2
+normalize_advantage: true
+ent_coef: 0.01  # Exploration
+vf_coef: 0.5
+
+# Device
+device: "mps"  # Apple Silicon GPU
+
+# Curriculum learning
+use_curriculum: true
+curriculum_stages:
+  food_collection: 200000
+  survival: 300000
+  basic_combat: 300000
+  advanced: 200000
+
+# Logging
+log_dir: "logs"
+checkpoint_dir: "checkpoints"
+save_interval_minutes: 20.0
+console_log_interval: 10
+
+# Model architecture
+model_config:
+  hidden_size: 256
+  num_layers: 3
+  attention_heads: 4
+  use_attention: true
+  use_spatial_features: true
+  dropout: 0.1
+  device: "mps"
