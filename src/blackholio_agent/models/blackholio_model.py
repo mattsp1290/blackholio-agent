@@ -226,6 +226,9 @@ class BlackholioModel(nn.Module):
         super().__init__()
         self.config = config or BlackholioModelConfig()
         
+        # Add backward compatibility for missing attributes
+        self._ensure_config_compatibility()
+        
         # Move model to specified device
         self.device = torch.device(self.config.device)
         
@@ -341,6 +344,25 @@ class BlackholioModel(nn.Module):
         self._initialize_weights()
         
         logger.info(f"BlackholioModel initialized with {self._count_parameters()} parameters")
+    
+    def _ensure_config_compatibility(self):
+        """Ensure backward compatibility for older saved models"""
+        # Default values for attributes that might not exist in older configs
+        defaults = {
+            'activation': 'tanh',
+            'use_attention': True,
+            'use_spatial_features': True,
+            'use_lstm': False,
+            'lstm_hidden_size': 128,
+            'use_layer_norm': True,
+            'dropout': 0.1,
+            'attention_heads': 4,
+            'attention_hidden': 128,
+        }
+        
+        for attr, default_value in defaults.items():
+            if not hasattr(self.config, attr):
+                setattr(self.config, attr, default_value)
     
     def _get_activation(self, name: str):
         """Get activation function by name"""

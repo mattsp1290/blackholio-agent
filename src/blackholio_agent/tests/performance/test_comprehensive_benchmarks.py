@@ -130,7 +130,7 @@ class PerformanceBenchmarks:
         
         for num_envs in num_envs_list:
             # Create mock environments
-            mock_clients = [MockSpacetimeDBClient() for _ in range(num_envs)]
+            mock_clients = [Mockcreate_game_client() for _ in range(num_envs)]
             
             # Create parallel env wrapper
             env = ParallelBlackholioEnv(

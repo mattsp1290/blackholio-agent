@@ -38,10 +38,7 @@ class TestTrainingPipeline:
         def create_env():
             env = BlackholioEnv()
             # Use mock client instead of real connection
-            env.connection.client = MockSpacetimeDBClient(MockConfig(
-                simulate_game_physics=True,
-                update_rate=20.0
-            ))
+            env.connection.client = MockSpacetimeDBClient()
             return env
         return create_env
     
@@ -106,7 +103,7 @@ class TestTrainingPipeline:
         # Mock environment connections
         for env in trainer.envs.envs:
             env.is_connected = True
-            await env.connection.client.connect("mock://test")
+            await env.connection.client.connect()
         
         # Start environments
         trainer.envs.start()
@@ -166,7 +163,7 @@ class TestTrainingPipeline:
         # Connect mock environments
         for env in trainer.envs.envs:
             env.is_connected = True
-            await env.connection.client.connect("mock://test")
+            await env.connection.client.connect()
         
         trainer.envs.start()
         
@@ -211,7 +208,7 @@ class TestTrainingPipeline:
         # Connect environments
         for env in trainer.envs.envs:
             env.is_connected = True
-            await env.connection.client.connect("mock://test")
+            await env.connection.client.connect()
         
         trainer.envs.start()
         trainer.last_obs, _ = trainer.envs.reset()
@@ -266,7 +263,7 @@ class TestTrainingPipeline:
         # Connect all environments
         for env in trainer.envs.envs:
             env.is_connected = True
-            await env.connection.client.connect("mock://test")
+            await env.connection.client.connect()
         
         trainer.envs.start()
         
@@ -323,7 +320,7 @@ class TestTrainingPipeline:
         # Connect environments
         for env in trainer.envs.envs:
             env.is_connected = True
-            await env.connection.client.connect("mock://test")
+            await env.connection.client.connect()
         
         trainer.envs.start()
         trainer.last_obs, _ = trainer.envs.reset()
@@ -373,7 +370,7 @@ class TestTrainingPipeline:
         # Connect environments
         for env in trainer.envs.envs:
             env.is_connected = True
-            await env.connection.client.connect("mock://test")
+            await env.connection.client.connect()
         
         trainer.envs.start()
         trainer.last_obs, _ = trainer.envs.reset()
@@ -443,7 +440,7 @@ class TestTrainingPipeline:
         # Connect environments
         for env in trainer.envs.envs:
             env.is_connected = True
-            await env.connection.client.connect("mock://test")
+            await env.connection.client.connect()
         
         trainer.envs.start()
         trainer.last_obs, _ = trainer.envs.reset()

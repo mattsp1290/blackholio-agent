@@ -32,6 +32,7 @@ class PPOConfig:
     n_envs: int = 8
     env_host: str = "localhost:3000"
     env_database: Optional[str] = None  # Use ConnectionConfig's default
+    env_db_identity: Optional[str] = None  # Database identity for v1.1.2
     
     # Training
     total_timesteps: int = 1_000_000
@@ -132,7 +133,8 @@ class PPOTrainer:
         env_config = ParallelEnvConfig(
             n_envs=self.config.n_envs,
             host=self.config.env_host,
-            database=self.config.env_database
+            database=self.config.env_database,
+            db_identity=self.config.env_db_identity
         )
         self.envs = ParallelBlackholioEnv(env_config)
         
@@ -482,11 +484,11 @@ class PPOTrainer:
         
         # Prepare metrics for curriculum manager
         # Get metric lists and handle empty cases
-        mean_reward_list = self.metrics_logger.metrics.get("mean_reward", [])
-        survival_rate_list = self.metrics_logger.metrics.get("survival_rate", [])
-        food_collected_list = self.metrics_logger.metrics.get("food_collected", [])
-        kill_rate_list = self.metrics_logger.metrics.get("kill_rate", [])
-        episode_length_list = self.metrics_logger.episode_metrics.get("length", [])
+        mean_reward_list = list(self.metrics_logger.metrics.get("mean_reward", []))
+        survival_rate_list = list(self.metrics_logger.metrics.get("survival_rate", []))
+        food_collected_list = list(self.metrics_logger.metrics.get("food_collected", []))
+        kill_rate_list = list(self.metrics_logger.metrics.get("kill_rate", []))
+        episode_length_list = list(self.metrics_logger.episode_metrics.get("length", []))
         
         curriculum_metrics = {
             "mean_reward": np.mean(mean_reward_list[-100:]) if mean_reward_list else 0.0,

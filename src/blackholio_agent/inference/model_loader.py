@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any
 import numpy as np
 
 from ..models import BlackholioModel, BlackholioModelConfig
+from ..training.ppo_trainer import PPOConfig
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,9 @@ class ModelLoader:
             torch.set_num_threads(num_threads)
             logger.info(f"Set CPU threads to {num_threads}")
         
-        # Load model
+        # Load model with support for both training and inference checkpoints
         try:
-            model = BlackholioModel.load(model_path, device=device)
+            model = ModelLoader._load_model_universal(model_path, device=device)
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise
@@ -62,6 +63,75 @@ class ModelLoader:
         param_count = sum(p.numel() for p in model.parameters())
         logger.info(f"Model loaded with {param_count:,} parameters")
         
+        return model
+    
+    @staticmethod
+    def _load_model_universal(model_path: str, device: Optional[str] = None) -> BlackholioModel:
+        """
+        Load a BlackholioModel from either training or inference checkpoint format.
+        
+        This method handles:
+        1. Inference format: checkpoint with 'config' containing BlackholioModelConfig
+        2. Training format: checkpoint with 'config' containing PPOConfig or in additional_state
+        
+        Args:
+            model_path: Path to the checkpoint file
+            device: Device to load model on (optional)
+            
+        Returns:
+            BlackholioModel instance
+        """
+        logger.info(f"Loading model with universal loader")
+        
+        # Load checkpoint
+        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+        
+        # Extract model config
+        model_config = None
+        
+        # Case 1: Direct model save (inference format)
+        if 'config' in checkpoint and isinstance(checkpoint['config'], BlackholioModelConfig):
+            model_config = checkpoint['config']
+            logger.info("Found BlackholioModelConfig in checkpoint (inference format)")
+        
+        # Case 2: Training checkpoint with PPOConfig
+        elif 'config' in checkpoint and isinstance(checkpoint['config'], PPOConfig):
+            ppo_config = checkpoint['config']
+            if hasattr(ppo_config, 'model_config') and ppo_config.model_config:
+                model_config = ppo_config.model_config
+                logger.info("Extracted BlackholioModelConfig from PPOConfig")
+        
+        # Case 3: Check additional_state
+        elif 'additional_state' in checkpoint and 'config' in checkpoint['additional_state']:
+            additional_config = checkpoint['additional_state']['config']
+            if isinstance(additional_config, PPOConfig):
+                if hasattr(additional_config, 'model_config') and additional_config.model_config:
+                    model_config = additional_config.model_config
+                    logger.info("Extracted BlackholioModelConfig from additional_state")
+        
+        # Case 4: No config found, use defaults
+        if model_config is None:
+            logger.warning("No model config found in checkpoint, using default BlackholioModelConfig")
+            model_config = BlackholioModelConfig()
+        
+        # Override device if specified
+        if device is not None:
+            model_config.device = device
+        
+        # Create model
+        model = BlackholioModel(model_config)
+        
+        # Load state dict
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            # Assume the checkpoint IS the state dict (old format)
+            model.load_state_dict(checkpoint)
+        
+        # Move to device
+        model.to(model.device)
+        
+        logger.info(f"Model loaded successfully")
         return model
     
     @staticmethod

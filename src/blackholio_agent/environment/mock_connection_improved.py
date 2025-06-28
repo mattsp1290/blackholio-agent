@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Any
 from threading import Lock
 from dataclasses import dataclass
 
-from .connection import BlackholioConnection, ConnectionConfig, GameState
+from .connection import ConnectionConfig, GameState
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +80,13 @@ class MockFood:
         }
 
 
-class ImprovedMockBlackholioConnection(BlackholioConnection):
-    """Improved mock connection that properly extends BlackholioConnection."""
+class ImprovedMockBlackholioConnection:
+    """Improved mock connection that implements the BlackholioConnection interface."""
     
     def __init__(self, config: ConnectionConfig):
         """Initialize mock connection."""
-        super().__init__(config)
+        self.config = config
+        self._connected = False
         
         # Mock-specific state
         self._mock_world_size = 1000

@@ -10,7 +10,7 @@ import torch
 import numpy as np
 import time
 import asyncio
-from statistics import mean, stdev
+from blackholio_client.models.game_statistics import PlayerStatistics, SessionStatistics
 
 from ...models import BlackholioModel, BlackholioModelConfig
 from ...environment import (
@@ -106,9 +106,7 @@ class TestInferenceSpeed:
         """Test complete inference pipeline speed."""
         # Create environment with mock connection
         env = BlackholioEnv()
-        env.connection.client = MockSpacetimeDBClient(MockConfig(
-            simulate_game_physics=False  # Disable physics for speed test
-        ))
+        env.connection.client = MockSpacetimeDBClient()
         
         await env.connect()
         

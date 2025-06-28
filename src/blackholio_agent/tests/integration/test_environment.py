@@ -25,10 +25,8 @@ class TestBlackholioEnvironment:
     @pytest.fixture
     def mock_client(self):
         """Create a mock SpacetimeDB client."""
-        return MockSpacetimeDBClient(MockConfig(
-            simulate_game_physics=True,
-            update_rate=20.0
-        ))
+        """Create a mock SpacetimeDB client."""
+        return MockSpacetimeDBClient()
     
     @pytest.mark.asyncio
     async def test_environment_lifecycle(self, mock_client):
@@ -332,9 +330,7 @@ class TestBlackholioEnvironment:
         envs = []
         for i in range(3):
             env = BlackholioEnv()
-            env.connection.client = MockSpacetimeDBClient(MockConfig(
-                simulate_game_physics=True
-            ))
+            env.connection.client = Mock(create_game_client())
             envs.append(env)
         
         # Connect all environments

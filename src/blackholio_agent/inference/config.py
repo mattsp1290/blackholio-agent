@@ -24,6 +24,7 @@ class InferenceConfig:
     # Connection settings (from env vars for Docker)
     host: str = field(default_factory=lambda: os.getenv('SPACETIMEDB_HOST', 'localhost:3000'))
     database: str = field(default_factory=lambda: os.getenv('SPACETIMEDB_DB', 'blackholio'))
+    db_identity: Optional[str] = field(default_factory=lambda: os.getenv('SPACETIMEDB_IDENTITY', None))
     auth_token: Optional[str] = field(default_factory=lambda: os.getenv('SPACETIMEDB_TOKEN', None))
     ssl_enabled: bool = field(default_factory=lambda: os.getenv('SSL_ENABLED', 'false').lower() == 'true')
     
@@ -55,6 +56,7 @@ class InferenceConfig:
         return BlackholioEnvConfig(
             host=self.host,
             database=self.database,
+            db_identity=self.db_identity,
             auth_token=self.auth_token,
             ssl_enabled=self.ssl_enabled,
             player_name=self.player_name,
@@ -64,6 +66,7 @@ class InferenceConfig:
             connection_config=ConnectionConfig(
                 host=self.host,
                 database=self.database,
+                db_identity=self.db_identity,
                 auth_token=self.auth_token,
                 ssl_enabled=self.ssl_enabled,
                 reconnect_delay=5.0,
@@ -92,4 +95,5 @@ class InferenceConfig:
     
     def __post_init__(self):
         """Post-initialization validation"""
-        self.validate()
+        # Don't validate here - validate after command line args are applied
+        pass

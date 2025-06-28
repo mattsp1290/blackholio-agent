@@ -25,6 +25,7 @@ class ParallelEnvConfig:
     n_envs: int = 8
     host: str = "localhost:3000"
     database: Optional[str] = None  # Use BlackholioEnvConfig's default
+    db_identity: Optional[str] = None  # Database identity for v1.1.2
     agent_name_prefix: str = "ML_Agent"
     max_episode_steps: int = 10000
     step_interval: float = 0.05  # 20Hz
@@ -113,11 +114,15 @@ class AsyncEnvWorker:
         self.loop = asyncio.get_event_loop()
         
         try:
-            # Create environment with unique name
+            # Create environment with unique name and database identity
             agent_name = f"{self.config.agent_name_prefix}_{self.env_id}_{int(time.time())}"
+            
+            # Use same database identity for all workers (they should connect to same database)
+            # Only the player name should be unique
             env_config = BlackholioEnvConfig(
                 host=self.config.host,
                 database=self.config.database,
+                db_identity=self.config.db_identity,  # Same DB identity for all workers
                 player_name=agent_name,
                 max_episode_steps=self.config.max_episode_steps,
                 step_interval=self.config.step_interval

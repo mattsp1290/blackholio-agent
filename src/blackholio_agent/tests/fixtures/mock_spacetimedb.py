@@ -402,11 +402,11 @@ def create_mock_client(scenario=None, config: Optional[MockConfig] = None) -> Mo
     Returns:
         Configured mock client
     """
-    client = MockSpacetimeDBClient(config)
+    client = Mockcreate_game_client()
     
     if scenario:
         # Connect first to initialize
-        asyncio.create_task(client.connect("mock://localhost"))
+        asyncio.create_task(client.connect())
         # Then load scenario
         client.set_game_scenario(scenario)
     

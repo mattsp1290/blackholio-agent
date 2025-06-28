@@ -141,9 +141,14 @@ class AgentBehaviorValidator:
         # This would create a mock environment with the given scenario
         # For now, returning a placeholder
         from ..fixtures.mock_spacetimedb import MockSpacetimeDBClient
+        
+        # Create environment with default config
+        env = BlackholioEnv()
+        # Replace connection with mock client
         mock_client = MockSpacetimeDBClient()
-        # Setup mock client with scenario data
-        return BlackholioEnv(mock_client)
+        env.connection = mock_client
+        
+        return env
 
 
 class TestAgentBehaviors:

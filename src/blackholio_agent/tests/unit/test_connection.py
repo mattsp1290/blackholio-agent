@@ -22,7 +22,8 @@ class TestBlackholioConnection:
     @pytest.fixture
     def mock_client(self):
         """Create a mock SpacetimeDB client."""
-        return MockSpacetimeDBClient(MockConfig(simulate_game_physics=False))
+        """Create a mock SpacetimeDB client."""
+        return MockSpacetimeDBClient()
     
     @pytest.fixture
     def connection_config(self):
