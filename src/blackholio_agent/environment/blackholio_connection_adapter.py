@@ -479,6 +479,42 @@ class BlackholioConnectionAdapter:
 
         self._improved_spawn_detection = improved_spawn_detection
         self._join_game_with_retry = join_game_with_retry
+    
+    def _debug_post_join_state(self, player_name: str):
+        """Debug what state we have after joining."""
+        try:
+            logger.info(f"🔍 Post-join debugging for {player_name}:")
+            logger.info(f"   Players in adapter: {len(self.players)}")
+            logger.info(f"   Entities in adapter: {len(self.entities)}")
+            logger.info(f"   Circles in adapter: {len(self.circles)}")
+            
+            # Try to get data from the client directly
+            if hasattr(self.client, 'get_all_players'):
+                try:
+                    client_players = self.client.get_all_players()
+                    logger.info(f"   Client reports {len(client_players)} players")
+                except Exception as e:
+                    logger.info(f"   Client get_all_players failed: {e}")
+            
+            if hasattr(self.client, 'get_all_entities'):
+                try:
+                    client_entities = self.client.get_all_entities()
+                    logger.info(f"   Client reports {len(client_entities)} entities")
+                except Exception as e:
+                    logger.info(f"   Client get_all_entities failed: {e}")
+                    
+            # Check connection manager state
+            if hasattr(self.client, '_connection_manager'):
+                try:
+                    cm = self.client._connection_manager
+                    logger.info(f"   Connection manager type: {type(cm)}")
+                    if hasattr(cm, 'connections'):
+                        logger.info(f"   Active connections: {len(cm.connections)}")
+                except Exception as e:
+                    logger.info(f"   Connection manager check failed: {e}")
+                    
+        except Exception as e:
+            logger.warning(f"Post-join debugging failed: {e}")
 
     def _get_current_game_state(self) -> Dict[str, int]:
         """Get current game state for comparison."""
@@ -558,12 +594,22 @@ class BlackholioConnectionAdapter:
             # Clear previous reducer success to avoid false positives
             self._subscription_state['last_reducer_success'] = None
             
+            logger.info(f"🎯 Attempting to join game with player: {player_name}")
+            
             if hasattr(self.client, "join_game"):
+                logger.info("📞 Calling client.join_game()...")
                 success = await self.client.join_game(player_name)
+                logger.info(f"📞 join_game() returned: {success}")
+                
                 if success:
                     self._subscription_state['last_reducer_success'] = 'join_game'
                     # Wait a brief moment for the reducer to take effect
-                    await asyncio.sleep(0.1)
+                    logger.info("⏳ Waiting 0.5s for reducer effect...")
+                    await asyncio.sleep(0.5)  # Increased wait time
+                    
+                    # Check what we got after the reducer call
+                    self._debug_post_join_state(player_name)
+                    
                 return success
             else:
                 # For mock/simulation mode, only set success if we're actually in mock mode
@@ -575,6 +621,8 @@ class BlackholioConnectionAdapter:
                     return False
         except Exception as e:
             logger.error(f"Join game attempt failed: {e}")
+            import traceback
+            logger.debug(f"Full error: {traceback.format_exc()}")
             return False
     
     def _on_subscription_update(self, update_data):
@@ -619,8 +667,29 @@ class BlackholioConnectionAdapter:
         
         if not diagnostics['last_update_time']:
             logger.error("❌ No subscription updates received")
+            # Try to debug what methods the client actually has
+            self._debug_client_methods()
         
         return diagnostics
+    
+    def _debug_client_methods(self):
+        """Debug what methods are available on the client."""
+        try:
+            logger.info("🔍 Available client methods:")
+            client_methods = [method for method in dir(self.client) if not method.startswith('_')]
+            for method in client_methods[:10]:  # Show first 10 methods
+                logger.info(f"   - {method}")
+            if len(client_methods) > 10:
+                logger.info(f"   ... and {len(client_methods) - 10} more")
+                
+            # Check specific methods we're interested in
+            important_methods = ['join_game', 'get_all_players', 'get_all_entities', 'get_local_player', 'call_reducer']
+            for method in important_methods:
+                has_method = hasattr(self.client, method)
+                logger.info(f"   {method}: {'✅' if has_method else '❌'}")
+                
+        except Exception as e:
+            logger.warning(f"Client method debugging failed: {e}")
     
     def _check_subscription_status(self) -> bool:
         """Check if subscription is properly active."""
