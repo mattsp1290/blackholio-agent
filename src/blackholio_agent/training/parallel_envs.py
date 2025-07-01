@@ -97,7 +97,10 @@ class AsyncEnvWorker:
         if result["type"] == "error":
             if self.config.reset_on_error:
                 logger.warning(f"Worker {self.env_id} step failed, resetting: {result['error']}")
-                return self.reset()[0], 0.0, True, False, {"error": result["error"]}
+                # Reset and return the new observation with terminated=False to prevent reset loops
+                obs, info = self.reset()
+                info["error"] = result["error"]
+                return obs, 0.0, False, False, info  # terminated=False prevents reset loop
             else:
                 raise RuntimeError(f"Step failed: {result['error']}")
                 
