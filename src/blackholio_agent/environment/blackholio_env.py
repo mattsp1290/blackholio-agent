@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, Tuple, List, Union
 from dataclasses import dataclass
 import logging
 import time
+import uuid
 import gymnasium as gym
 from gymnasium import spaces
 
@@ -186,7 +187,7 @@ class BlackholioEnv(gym.Env):
     
     async def async_reset(self, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Reset the environment (async version).
+        Reset the environment with improved spawn handling.
         
         Args:
             seed: Random seed
@@ -210,37 +211,54 @@ class BlackholioEnv(gym.Env):
         
         # Initialize connection if needed
         if self.connection is None:
-            await self._initialize_connection()
+            await self._setup_connection_with_diagnostics()
         
         # Ensure connected (skip for mock mode)
         if not self._use_mock:
-            await self.connection.ensure_connected()
+            if not self.connection.is_connected():
+                await self.connection.connect()
         
-        # Check if player is already spawned before trying to join again
+        # Generate unique player name
+        player_name = self._generate_player_name()
+        
+        # Enhanced spawn handling for v1.1.2 connections
         if not self._use_mock:
-            if not self._is_player_spawned():
-                logger.info("Player not spawned yet, joining game...")
-                await self._join_game()
+            if isinstance(self.connection, BlackholioConnectionV112):
+                # Use improved spawn detection with retry logic
+                spawn_success = await self._enhanced_spawn_handling(player_name)
+                
+                if not spawn_success:
+                    logger.error(f"❌ Failed to spawn player {player_name}")
+                    # Return safe default state
+                    return self._get_default_observation(), {}
             else:
-                logger.info("Player already spawned, skipping join game")
+                # Legacy connection handling
+                if not self._is_player_spawned():
+                    logger.info("Player not spawned yet, joining game...")
+                    await self._join_game()
+                    await self._wait_for_spawn()
         else:
             logger.info("Mock mode - skipping player spawn checks")
         
-        # For v1.1.2 connection, spawn is already confirmed in enter_game
-        if not self._use_mock and not isinstance(self.connection, BlackholioConnectionV112):
-            # Wait for initial game state only for legacy connections
-            await self._wait_for_spawn()
+        # Wait for initial game state
+        initial_state = await self._wait_for_initial_state(timeout=3.0)
+        
+        if not initial_state:
+            logger.warning("⚠️  No initial state received, using empty state")
+            initial_state = self._get_empty_state()
+        
+        self.current_game_state = initial_state
         
         # Get initial observation
         self.current_obs = self._get_observation()
         
         info = {
             'episode_stats': episode_stats.__dict__ if episode_stats.steps > 0 else None,
-            'player_id': self.connection.player_id,
-            'player_identity': self.connection.player_identity
+            'player_id': getattr(self.connection, 'player_id', None),
+            'player_identity': getattr(self.connection, 'player_identity', None)
         }
         
-        logger.info(f"Environment reset complete. Player ID: {self.connection.player_id}")
+        logger.info(f"Environment reset complete. Player ID: {getattr(self.connection, 'player_id', 'None')}")
         
         return self.current_obs, info
     
@@ -306,12 +324,7 @@ class BlackholioEnv(gym.Env):
         # Ensure we have a valid game state for reward calculation
         if self.current_game_state is None:
             logger.warning("No game state available for reward calculation, using empty state")
-            self.current_game_state = {
-                'player_entities': [],
-                'other_entities': [],
-                'food_entities': [],
-                'timestamp': 0
-            }
+            self.current_game_state = self._get_empty_state()
         
         reward, reward_components = self.reward_calculator.calculate_step_reward(
             self.current_game_state, action, info
@@ -402,32 +415,74 @@ class BlackholioEnv(gym.Env):
         
         return False
     
-    async def _join_game(self) -> None:
-        """Join the game with specified player name"""
-        logger.info(f"Joining game as '{self.config.player_name}'")
-        
-        # Check if we're using v1.1.2 connection and need to initialize game first
-        if isinstance(self.connection, BlackholioConnectionV112):
-            logger.info("Using v1.1.2 connection - ensuring game is initialized...")
-            
-            # Log current state before joining
-            logger.info(f"Pre-join state: Players={len(self.connection.players)}, Entities={len(self.connection.entities)}, Circles={len(self.connection.circles)}")
-            
-            # Don't call connect reducer directly - it's a lifecycle reducer
-            # The v1.1.2 connection handles this automatically
-            
-            # Skip init reducer (SpacetimeDB v1.1.2 lifecycle reducers can't be called directly)
-            logger.info("Skipping init reducer - SpacetimeDB calls this automatically")
-            await asyncio.sleep(1.0)  # Give time for automatic initialization
-            
-            # Use the v1.1.2 specific enter_game method with extended timeout for inference
-            spawn_success = await self.connection.enter_game(self.config.player_name, timeout=15.0)
-            if not spawn_success:
-                logger.warning("Player spawn detection failed, but continuing with training")
-                # Don't raise error - let the episode termination logic handle it
+    def _generate_player_name(self) -> str:
+        """Generate a unique player name for this environment instance."""
+        # Extract base name parts - preserve original prefix and env_id
+        parts = self.config.player_name.split('_')
+        if len(parts) >= 3:
+            # Format: ML_Agent_0 -> ML_Agent_0_uuid
+            prefix = f"{parts[0]}_{parts[1]}_{parts[2]}"
         else:
-            # Call EnterGame reducer for legacy connection
-            await self.connection.call_reducer("EnterGame", self.config.player_name)
+            # Fallback
+            prefix = "ML_Agent_0"
+        
+        # Generate new UUID-based suffix
+        unique_id = str(uuid.uuid4())[:8]
+        new_name = f"{prefix}_{unique_id}"
+        
+        logger.info(f"Generated player name: {new_name}")
+        self.config.player_name = new_name
+        return new_name
+    
+    def _regenerate_player_name(self) -> str:
+        """Regenerate player name on duplicate errors."""
+        return self._generate_player_name()
+
+    async def _join_game(self) -> None:
+        """Join the game with specified player name, regenerating name on duplicate errors"""
+        max_attempts = 3
+        
+        for attempt in range(max_attempts):
+            logger.info(f"Joining game as '{self.config.player_name}' (attempt {attempt + 1})")
+            
+            try:
+                # Check if we're using v1.1.2 connection and need to initialize game first
+                if isinstance(self.connection, BlackholioConnectionV112):
+                    logger.info("Using v1.1.2 connection - ensuring game is initialized...")
+                    
+                    # Log current state before joining
+                    logger.info(f"Pre-join state: Players={len(self.connection.players)}, Entities={len(self.connection.entities)}, Circles={len(self.connection.circles)}")
+                    
+                    # Don't call connect reducer directly - it's a lifecycle reducer
+                    # The v1.1.2 connection handles this automatically
+                    
+                    # Skip init reducer (SpacetimeDB v1.1.2 lifecycle reducers can't be called directly)
+                    logger.info("Skipping init reducer - SpacetimeDB calls this automatically")
+                    await asyncio.sleep(1.0)  # Give time for automatic initialization
+                    
+                    # Use the v1.1.2 specific enter_game method with extended timeout for inference
+                    spawn_success = await self.connection.enter_game(self.config.player_name, timeout=15.0)
+                    if spawn_success:
+                        return  # Success, exit the loop
+                    else:
+                        logger.warning("Player spawn detection failed, but continuing with training")
+                        return  # Don't retry spawn detection failures
+                else:
+                    # Call EnterGame reducer for legacy connection
+                    await self.connection.call_reducer("EnterGame", self.config.player_name)
+                    return  # Success, exit the loop
+                    
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "duplicate" in error_msg and "player" in error_msg and attempt < max_attempts - 1:
+                    logger.warning(f"Duplicate player name error on attempt {attempt + 1}: {e}")
+                    self._regenerate_player_name()
+                    logger.info(f"Retrying with new player name: {self.config.player_name}")
+                    continue
+                else:
+                    # Re-raise if not a duplicate error or max attempts reached
+                    logger.error(f"Failed to join game after {attempt + 1} attempts: {e}")
+                    raise
     
     async def _wait_for_spawn(self, timeout: float = 30.0) -> None:
         """Wait for player to spawn in game"""
@@ -483,15 +538,20 @@ class BlackholioEnv(gym.Env):
         }
     
     def _get_observation(self) -> np.ndarray:
-        """Get current observation from game state"""
+        """Get current observation from game state with improved error handling."""
         if not self.current_game_state:
+            logger.warning("No game state available for observation, using empty state")
             return np.zeros(self.observation_space_handler.shape, dtype=np.float32)
         
-        return self.observation_space_handler.process_game_state(
-            self.current_game_state['player_entities'],
-            self.current_game_state['other_entities'],
-            self.current_game_state['food_entities']
-        )
+        try:
+            return self.observation_space_handler.process_game_state(
+                self.current_game_state.get('player_entities', []),
+                self.current_game_state.get('other_entities', []),
+                self.current_game_state.get('food_entities', [])
+            )
+        except Exception as e:
+            logger.warning(f"Error processing game state for observation: {e}")
+            return np.zeros(self.observation_space_handler.shape, dtype=np.float32)
     
     def _extract_game_events(self) -> Dict[str, Any]:
         """Extract game events for reward calculation"""
@@ -552,6 +612,74 @@ class BlackholioEnv(gym.Env):
         y = sum(e.get('y', 0) * e.get('mass', 1) for e in entities) / total_mass
         
         return x, y
+    
+    async def _setup_connection_with_diagnostics(self) -> None:
+        """Setup connection with enhanced diagnostics."""
+        try:
+            await self._initialize_connection()
+            
+            # Run diagnostics if using v1.1.2 connection
+            if isinstance(self.connection, BlackholioConnectionV112):
+                self.connection._diagnose_subscription_issues()
+        except Exception as e:
+            logger.error(f"Connection setup failed: {e}")
+            raise
+    
+    async def _enhanced_spawn_handling(self, player_name: str) -> bool:
+        """Enhanced spawn handling with improved detection."""
+        try:
+            logger.info(f"🎮 Enhanced spawn handling for '{player_name}'")
+            
+            # Use the improved spawn detection from the adapter
+            if hasattr(self.connection, '_join_game_with_retry'):
+                return await self.connection._join_game_with_retry(player_name)
+            else:
+                # Fallback to original method
+                return await self.connection.enter_game(player_name, timeout=10.0)
+                
+        except Exception as e:
+            logger.error(f"Enhanced spawn handling failed: {e}")
+            return False
+    
+    async def _wait_for_initial_state(self, timeout: float = 3.0) -> Optional[Dict[str, Any]]:
+        """Wait for initial game state after spawn."""
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            # Try to get game state
+            try:
+                player_entities = self.connection.get_player_entities()
+                other_entities = self.connection.get_other_entities()
+                
+                if player_entities or other_entities:
+                    state = {
+                        'player_entities': player_entities,
+                        'other_entities': other_entities, 
+                        'food_entities': [],  # Will be populated by proper game state
+                        'timestamp': time.time()
+                    }
+                    logger.info(f"✅ Received initial state: {len(player_entities)} player entities, {len(other_entities)} other entities")
+                    return state
+            except Exception as e:
+                logger.debug(f"Error getting initial state: {e}")
+            
+            await asyncio.sleep(0.1)
+        
+        logger.warning("⏰ Timeout waiting for initial state")
+        return None
+    
+    def _get_empty_state(self) -> Dict[str, Any]:
+        """Get empty game state as fallback."""
+        return {
+            'player_entities': [],
+            'other_entities': [],
+            'food_entities': [],
+            'timestamp': time.time()
+        }
+    
+    def _get_default_observation(self) -> np.ndarray:
+        """Get default observation when spawn fails."""
+        return np.zeros(self.observation_space_handler.shape, dtype=np.float32)
     
     async def _initialize_connection(self) -> None:
         """Initialize connection with fallback to mock mode"""

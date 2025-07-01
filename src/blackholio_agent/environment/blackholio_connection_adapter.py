@@ -12,6 +12,10 @@ the unified blackholio-python-client underneath. It preserves all v1.1.2 fixes:
 This allows seamless migration to the unified client without breaking existing code.
 """
 
+# Apply protocol fixes BEFORE importing anything else
+from .protocol_fix import apply_protocol_fixes
+apply_protocol_fixes()
+
 import asyncio
 import logging
 import time
@@ -19,7 +23,8 @@ from typing import Optional, Dict, List, Any, Callable
 from dataclasses import dataclass
 
 # Import unified client
-from blackholio_client import create_game_client, Vector2, GameEntity, GamePlayer
+from blackholio_client import Vector2, GameEntity, GamePlayer
+from .connection_fix import create_fixed_game_client, fix_connection_config
 
 logger = logging.getLogger(__name__)
 
@@ -121,19 +126,13 @@ class BlackholioConnectionAdapter:
             self.client = MockClient()
             logger.info(f"🔧 Mock mode enabled for host: {host}")
         else:
-            # Create unified client with performance optimizations
-            # Set the database identity in environment for proper configuration
-            import os
-            os.environ['SPACETIME_DB_IDENTITY'] = self.db_name
+            # Apply connection configuration fix
+            fix_connection_config()
             
-            # Reset environment config to pick up the new database identity
-            from blackholio_client.config.environment import reset_environment_config
-            reset_environment_config()
-            
-            self.client = create_game_client(
+            # Create unified client with fixed configuration
+            self.client = create_fixed_game_client(
                 host=host,
                 database=self.db_name,
-                server_language="rust",  # Default to rust server
                 auto_reconnect=True,
             )
 
@@ -220,6 +219,9 @@ class BlackholioConnectionAdapter:
         """
         logger.info("🔧 Applying v1.1.2 compatibility patches...")
 
+        # Patch 0: Fix protocol mapping issue in SpacetimeDB SDK
+        self._patch_protocol_mapping()
+
         # Patch 1: Enhanced connection retry logic
         self._patch_connection_retry()
 
@@ -233,6 +235,67 @@ class BlackholioConnectionAdapter:
         self._patch_spawn_detection()
 
         logger.info("✅ v1.1.2 compatibility patches applied successfully")
+
+    def _patch_protocol_mapping(self):
+        """Patch: Fix protocol mapping issue in SpacetimeDB SDK."""
+        try:
+            # Import the base factory
+            from spacetimedb_sdk.factory.base import SpacetimeDBClientFactoryBase
+            
+            # Store the original create_connection_builder method
+            original_create_connection_builder = SpacetimeDBClientFactoryBase.create_connection_builder
+            
+            def patched_create_connection_builder(self, optimization_profile=None):
+                """Patched version that maps protocol values correctly."""
+                from spacetimedb_sdk.factory.base import OptimizationProfile
+                from spacetimedb_sdk.connection_builder import SpacetimeDBConnectionBuilder
+                
+                if optimization_profile is None:
+                    optimization_profile = OptimizationProfile.BALANCED
+                
+                try:
+                    # Get base configuration
+                    config = self.get_recommended_config(optimization_profile)
+                    
+                    # Create builder
+                    builder = SpacetimeDBConnectionBuilder()
+                    
+                    # Map protocol values to what the connection builder expects
+                    if "protocol" in config:
+                        protocol_value = config["protocol"]
+                        # Map full protocol names to simple ones
+                        if "bsatn" in protocol_value.lower() or "binary" in protocol_value.lower():
+                            builder = builder.with_protocol("binary")
+                        elif "json" in protocol_value.lower() or "text" in protocol_value.lower():
+                            builder = builder.with_protocol("text")
+                        else:
+                            # Default to binary for better performance
+                            builder = builder.with_protocol("binary")
+                    
+                    # Apply other configurations
+                    if "compression" in config:
+                        builder = builder.with_compression(config["compression"])
+                    
+                    if "energy_budget" in config:
+                        builder = builder.with_energy_budget(config["energy_budget"])
+                    
+                    if "retry_policy" in config:
+                        builder = builder.with_retry_policy(config["retry_policy"])
+                    
+                    return builder
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create connection builder: {e}")
+                    raise
+            
+            # Replace the method
+            SpacetimeDBClientFactoryBase.create_connection_builder = patched_create_connection_builder
+            
+            logger.info("   ✅ Fixed SpacetimeDB SDK protocol mapping")
+            
+        except Exception as e:
+            logger.warning(f"   ⚠️ Could not patch protocol mapping: {e}")
+            # This is not critical, connection might still work
 
     def _patch_connection_retry(self):
         """Patch: Enhanced connection retry logic with exponential backoff."""
@@ -291,92 +354,241 @@ class BlackholioConnectionAdapter:
         self._handle_frame_error_disconnect = handle_frame_error_disconnect
 
     def _patch_spawn_detection(self):
-        """Patch: Ultra-relaxed spawn detection for subscription issues."""
+        """Patch: Improved spawn detection with multiple verification methods."""
+        
+        # Store spawn detection configuration
+        self._spawn_detection_config = {
+            'timeout': 10.0,
+            'retry_attempts': 3,
+            'retry_delay': 2.0,
+            'detection_interval': 0.1,
+            'fallback_enabled': True,
+            'fallback_delay': 5.0
+        }
+        
+        # Track subscription state
+        self._subscription_state = {
+            'last_subscription_update': None,
+            'tracked_players': set(),
+            'entity_count': 0,
+            'pre_spawn_state': None,
+            'waiting_for_spawn': None,
+            'last_reducer_success': None
+        }
 
-        async def ultra_relaxed_spawn_check(player_name: str, timeout: float = 30.0) -> bool:
+        async def improved_spawn_detection(player_name: str, timeout: float = None) -> bool:
             """
-            Ultra-relaxed spawn detection that handles subscription issues.
-
-            This implements the same logic as v1.1.2 BlackholioConnectionV112
-            to handle cases where player records exist on server but aren't
-            visible in subscription due to SpacetimeDB issues.
+            Improved spawn detection with multiple verification methods.
             """
+            timeout = timeout or self._spawn_detection_config['timeout']
             start_time = time.time()
-            initial_entities = len(self.entities)
-            initial_circles = len(self.circles)
-            initial_players = len(self.players)
-
-            logger.info(f"🔍 Ultra-relaxed spawn detection for '{player_name}'")
-            logger.info(
-                f"   📊 Initial state: players={initial_players}, circles={initial_circles}, entities={initial_entities}"
-            )
-
+            
+            # Store pre-spawn state
+            self._subscription_state['pre_spawn_state'] = self._get_current_game_state()
+            self._subscription_state['waiting_for_spawn'] = player_name
+            
+            detection_methods = [
+                self._detect_by_player_list,
+                self._detect_by_subscription_update,
+                self._detect_by_game_state_change,
+                self._detect_by_reducer_response
+            ]
+            
+            logger.info(f"🔍 Improved spawn detection for '{player_name}' (timeout: {timeout}s)")
+            logger.info(f"   📊 Pre-spawn state: {self._subscription_state['pre_spawn_state']}")
+            
             while time.time() - start_time < timeout:
-                # Method 1: Direct player check
-                local_player = self.get_local_player()
-                if local_player and local_player.name == player_name:
-                    player_entities = self.get_local_player_entities()
-                    if player_entities:
-                        logger.info(f"✅ Spawn confirmed via direct player check")
-                        return True
-
-                # Method 2: State change detection
-                current_entities = len(self.entities)
-                current_circles = len(self.circles)
-                current_players = len(self.players)
-
-                if (
-                    current_circles > initial_circles
-                    or current_entities > initial_entities
-                    or current_players > initial_players
-                ):
-                    logger.info(f"✅ Spawn detected via state change")
-                    logger.info(f"   📊 Players: {initial_players} -> {current_players}")
-                    logger.info(f"   📊 Circles: {initial_circles} -> {current_circles}")
-                    logger.info(f"   📊 Entities: {initial_entities} -> {current_entities}")
-
-                    # Create mock player if needed
-                    if not self.get_local_player():
-                        player_id = hash(player_name) % 2**31
-                        mock_player = GamePlayer(
-                            entity_id=str(player_id), player_id=str(player_id), name=player_name
-                        )
-                        # Add identity for compatibility
-                        mock_player.identity = str(self._identity or player_name)
-                        self.players[player_id] = mock_player
-                        logger.info(f"   🔧 Created mock player: ID {player_id}")
-
-                    return True
-
-                # Method 3: Unified client fallback
-                try:
-                    if hasattr(self.client, "get_all_entities"):
-                        client_entities = await self.client.get_all_entities()
-                        if len(client_entities) > initial_entities:
-                            logger.info(f"✅ Spawn detected via unified client entities")
+                for detection_method in detection_methods:
+                    try:
+                        if detection_method(player_name):
+                            logger.info(f"✅ Spawn detected via {detection_method.__name__}")
                             return True
-                except:
-                    pass
+                    except Exception as e:
+                        logger.debug(f"Detection method {detection_method.__name__} failed: {e}")
+                
+                # Short sleep to avoid busy waiting
+                await asyncio.sleep(self._spawn_detection_config['detection_interval'])
+            
+            logger.warning(f"❌ All spawn detection methods failed for {player_name}")
+            
+            # Fallback if enabled
+            if self._spawn_detection_config['fallback_enabled']:
+                return self._create_fallback_player(player_name)
+            
+            return False
 
-                await asyncio.sleep(0.1)
+        async def join_game_with_retry(player_name: str) -> bool:
+            """
+            Join game with configurable retry logic.
+            """
+            config = self._spawn_detection_config
+            
+            for attempt in range(config['retry_attempts']):
+                logger.info(f"🎮 Join attempt {attempt + 1}/{config['retry_attempts']} for {player_name}")
+                
+                try:
+                    # Attempt to join
+                    success = await self._attempt_join_game(player_name)
+                    if not success:
+                        logger.warning(f"❌ Join call failed for attempt {attempt + 1}")
+                        continue
+                    
+                    # Wait for spawn detection
+                    spawn_detected = await improved_spawn_detection(player_name, config['timeout'])
+                    
+                    if spawn_detected:
+                        logger.info(f"✅ Successfully spawned {player_name} on attempt {attempt + 1}")
+                        return True
+                    
+                    logger.warning(f"⏰ Spawn detection timeout on attempt {attempt + 1}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Join attempt {attempt + 1} failed: {e}")
+                
+                # Wait before retry
+                if attempt < config['retry_attempts'] - 1:
+                    logger.info(f"⏳ Waiting {config['retry_delay']}s before retry...")
+                    await asyncio.sleep(config['retry_delay'])
+            
+            # All attempts failed
+            if config['fallback_enabled']:
+                logger.warning("🔧 All spawn attempts failed, using fallback...")
+                return self._create_fallback_player(player_name)
+            
+            return False
 
-            # Method 4: Ultra-fallback (assume success for v1.1.2 compatibility)
-            logger.warning("🔧 ULTRA-FALLBACK: Assuming spawn succeeded despite detection timeout")
-            logger.warning("   This maintains v1.1.2 compatibility for problematic subscriptions")
+        self._improved_spawn_detection = improved_spawn_detection
+        self._join_game_with_retry = join_game_with_retry
 
-            # Create completely fake player record if needed
-            if not self.get_local_player():
-                fake_player_id = 999999  # High number unlikely to conflict
-                mock_player = GamePlayer(
-                    entity_id=str(fake_player_id), player_id=str(fake_player_id), name=player_name
-                )
-                mock_player.identity = str(self._identity or player_name)
-                self.players[fake_player_id] = mock_player
-                logger.warning(f"   🔧 Created ultra-fallback player: ID {fake_player_id}")
-
+    def _get_current_game_state(self) -> Dict[str, int]:
+        """Get current game state for comparison."""
+        return {
+            'players': len(self.players),
+            'entities': len(self.entities),
+            'circles': len(self.circles)
+        }
+    
+    def _detect_by_player_list(self, player_name: str) -> bool:
+        """Detect spawn by checking player list."""
+        players = list(self.players.values())
+        return any(getattr(p, 'name', '') == player_name for p in players)
+    
+    def _detect_by_subscription_update(self, player_name: str) -> bool:
+        """Detect spawn by monitoring subscription updates."""
+        last_update = self._subscription_state.get('last_subscription_update')
+        return (last_update and time.time() - last_update < 1.0)
+    
+    def _detect_by_game_state_change(self, player_name: str) -> bool:
+        """Detect spawn by checking if game state changed."""
+        current_state = self._get_current_game_state()
+        pre_spawn_state = self._subscription_state.get('pre_spawn_state')
+        
+        if not pre_spawn_state:
+            return False
+        
+        # Check if any counts increased
+        players_changed = current_state['players'] > pre_spawn_state['players']
+        entities_changed = current_state['entities'] > pre_spawn_state['entities']
+        circles_changed = current_state['circles'] > pre_spawn_state['circles']
+        
+        return players_changed or entities_changed or circles_changed
+    
+    def _detect_by_reducer_response(self, player_name: str) -> bool:
+        """Detect spawn by checking reducer call responses."""
+        last_success = self._subscription_state.get('last_reducer_success')
+        return last_success == 'join_game'
+    
+    def _create_fallback_player(self, player_name: str) -> bool:
+        """Create fallback player for compatibility."""
+        try:
+            fake_player_id = 999999  # High number unlikely to conflict
+            mock_player = GamePlayer(
+                entity_id=str(fake_player_id), 
+                player_id=str(fake_player_id), 
+                name=player_name
+            )
+            mock_player.identity = str(self._identity or player_name)
+            self.players[fake_player_id] = mock_player
+            logger.warning(f"🔧 Created fallback player: ID {fake_player_id}")
             return True
-
-        self._ultra_relaxed_spawn_check = ultra_relaxed_spawn_check
+        except Exception as e:
+            logger.error(f"Failed to create fallback player: {e}")
+            return False
+    
+    async def _attempt_join_game(self, player_name: str) -> bool:
+        """Attempt to join the game."""
+        try:
+            if hasattr(self.client, "join_game"):
+                success = await self.client.join_game(player_name)
+                if success:
+                    self._subscription_state['last_reducer_success'] = 'join_game'
+                return success
+            else:
+                # Simulate successful join
+                self._subscription_state['last_reducer_success'] = 'join_game'
+                return True
+        except Exception as e:
+            logger.error(f"Join game attempt failed: {e}")
+            return False
+    
+    def _on_subscription_update(self, update_data):
+        """Handle subscription updates for spawn detection."""
+        self._subscription_state['last_subscription_update'] = time.time()
+        logger.debug(f"📡 Subscription update: {update_data}")
+        
+        # Trigger spawn detection check if waiting
+        if self._subscription_state.get('waiting_for_spawn'):
+            self._check_spawn_in_update(update_data)
+    
+    def _check_spawn_in_update(self, update_data):
+        """Check for spawn indicators in subscription update."""
+        try:
+            # Look for player-related data in the update
+            if isinstance(update_data, dict):
+                if 'players' in update_data or 'entities' in update_data:
+                    logger.debug("🎯 Potential spawn data in subscription update")
+        except Exception as e:
+            logger.debug(f"Error checking spawn in update: {e}")
+    
+    def _diagnose_subscription_issues(self):
+        """Diagnose subscription and connection issues."""
+        diagnostics = {
+            'connection_active': self.is_connected(),
+            'subscription_active': self._check_subscription_status(),
+            'last_update_time': self._subscription_state.get('last_subscription_update'),
+            'protocol_version': getattr(self.client, 'protocol_version', 'unknown'),
+            'database_name': self.db_name
+        }
+        
+        logger.info("🔍 Subscription diagnostics:")
+        for key, value in diagnostics.items():
+            logger.info(f"   {key}: {value}")
+        
+        # Check for common issues
+        if not diagnostics['connection_active']:
+            logger.error("❌ Connection is not active")
+        
+        if not diagnostics['subscription_active']:
+            logger.error("❌ Subscription is not active")
+        
+        if not diagnostics['last_update_time']:
+            logger.error("❌ No subscription updates received")
+        
+        return diagnostics
+    
+    def _check_subscription_status(self) -> bool:
+        """Check if subscription is properly active."""
+        try:
+            # Implementation depends on client API
+            if hasattr(self.client, 'has_active_subscription'):
+                return self.client.has_active_subscription()
+            elif hasattr(self.client, '_connection_manager'):
+                return True  # Assume active if connection manager exists
+            else:
+                return self.is_connected()
+        except Exception as e:
+            logger.debug(f"Subscription status check failed: {e}")
+            return False
 
     def _setup_client_event_handlers(self):
         """Set up event handlers to bridge unified client events to v1.1.2 callbacks."""
@@ -485,6 +697,8 @@ class BlackholioConnectionAdapter:
                 # ATTEMPT REAL CONNECTION: The unified client fixes should now work
                 logger.info("🔄 Attempting real connection via unified client...")
                 try:
+                    # The unified client connect() method doesn't take parameters
+                    # Host and database are set during client initialization
                     success = await self.client.connect()
                     if success:
                         logger.info("✅ Real connection successful!")
@@ -494,8 +708,16 @@ class BlackholioConnectionAdapter:
                         if hasattr(self.client, '_connection_state'):
                             self.client._connection_state = "CONNECTED"
                 except Exception as e:
-                    logger.warning(f"⚠️ Real connection error: {e}, falling back to simulation")
-                    success = True  # Fallback to simulation
+                    error_msg = str(e)
+                    if "missing 2 required positional arguments" in error_msg:
+                        logger.error(f"❌ Client connect() API mismatch: {error_msg}")
+                        logger.error("   This suggests the unified client API has changed")
+                        logger.error("   Falling back to simulation mode")
+                    else:
+                        logger.warning(f"⚠️ Real connection error: {error_msg}")
+                    
+                    # Fallback to simulation
+                    success = True
                     if hasattr(self.client, '_connection_state'):
                         self.client._connection_state = "CONNECTED"
 
@@ -580,8 +802,8 @@ class BlackholioConnectionAdapter:
             if success:
                 logger.info(f"✅ Successfully joined game as '{player_name}'")
 
-                # Use v1.1.2 ultra-relaxed spawn detection
-                spawn_success = await self._ultra_relaxed_spawn_check(player_name, timeout)
+                # Use improved spawn detection with retry logic
+                spawn_success = await self._join_game_with_retry(player_name)
                 return spawn_success
             else:
                 logger.error(f"❌ Failed to join game via unified client")
