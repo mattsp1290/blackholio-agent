@@ -387,21 +387,41 @@ class BlackholioConnectionAdapter:
             self._subscription_state['pre_spawn_state'] = self._get_current_game_state()
             self._subscription_state['waiting_for_spawn'] = player_name
             
+            # Prioritize more reliable detection methods
             detection_methods = [
-                self._detect_by_player_list,
-                self._detect_by_subscription_update,
-                self._detect_by_game_state_change,
-                self._detect_by_reducer_response
+                self._detect_by_player_list,        # Most reliable - actual player exists
+                self._detect_by_game_state_change,   # Second most reliable - state changed
+                self._detect_by_subscription_update, # Network activity indicator
+                self._detect_by_reducer_response     # Least reliable - just reducer call
             ]
             
             logger.info(f"🔍 Improved spawn detection for '{player_name}' (timeout: {timeout}s)")
             logger.info(f"   📊 Pre-spawn state: {self._subscription_state['pre_spawn_state']}")
             
             while time.time() - start_time < timeout:
-                for detection_method in detection_methods:
+                for i, detection_method in enumerate(detection_methods):
                     try:
                         if detection_method(player_name):
-                            logger.info(f"✅ Spawn detected via {detection_method.__name__}")
+                            method_name = detection_method.__name__
+                            reliability = ["HIGH", "MEDIUM", "LOW", "MINIMAL"][i]
+                            logger.info(f"✅ Spawn detected via {method_name} (reliability: {reliability})")
+                            
+                            # For low reliability methods, do additional verification
+                            if i >= 2:  # subscription_update or reducer_response
+                                logger.debug("🔍 Low reliability detection - performing additional verification")
+                                
+                                # Wait a bit more and check if we have actual game state
+                                await asyncio.sleep(0.5)
+                                
+                                # Try the more reliable methods again
+                                if (self._detect_by_player_list(player_name) or 
+                                    self._detect_by_game_state_change(player_name)):
+                                    logger.info("✅ Additional verification successful")
+                                    return True
+                                else:
+                                    logger.warning("⚠️ Additional verification failed - continuing detection")
+                                    continue
+                            
                             return True
                     except Exception as e:
                         logger.debug(f"Detection method {detection_method.__name__} failed: {e}")
@@ -494,9 +514,26 @@ class BlackholioConnectionAdapter:
         return players_changed or entities_changed or circles_changed
     
     def _detect_by_reducer_response(self, player_name: str) -> bool:
-        """Detect spawn by checking reducer call responses."""
+        """Detect spawn by checking reducer call responses AND actual game state."""
         last_success = self._subscription_state.get('last_reducer_success')
-        return last_success == 'join_game'
+        if last_success != 'join_game':
+            return False
+        
+        # Don't trust reducer response alone - verify with actual game state
+        try:
+            local_player = self.get_local_player()
+            if local_player and local_player.name == player_name:
+                return True
+            
+            # Check if we have any entities indicating game activity
+            player_entities = self.get_local_player_entities()
+            if player_entities:
+                return True
+                
+        except Exception as e:
+            logger.debug(f"Error verifying game state in reducer response detection: {e}")
+        
+        return False
     
     def _create_fallback_player(self, player_name: str) -> bool:
         """Create fallback player for compatibility."""
@@ -518,15 +555,24 @@ class BlackholioConnectionAdapter:
     async def _attempt_join_game(self, player_name: str) -> bool:
         """Attempt to join the game."""
         try:
+            # Clear previous reducer success to avoid false positives
+            self._subscription_state['last_reducer_success'] = None
+            
             if hasattr(self.client, "join_game"):
                 success = await self.client.join_game(player_name)
                 if success:
                     self._subscription_state['last_reducer_success'] = 'join_game'
+                    # Wait a brief moment for the reducer to take effect
+                    await asyncio.sleep(0.1)
                 return success
             else:
-                # Simulate successful join
-                self._subscription_state['last_reducer_success'] = 'join_game'
-                return True
+                # For mock/simulation mode, only set success if we're actually in mock mode
+                if self._mock_mode or (hasattr(self.client, '__class__') and 'Mock' in self.client.__class__.__name__):
+                    self._subscription_state['last_reducer_success'] = 'join_game'
+                    return True
+                else:
+                    logger.warning("No join_game method available and not in mock mode")
+                    return False
         except Exception as e:
             logger.error(f"Join game attempt failed: {e}")
             return False
@@ -713,13 +759,19 @@ class BlackholioConnectionAdapter:
                         logger.error(f"❌ Client connect() API mismatch: {error_msg}")
                         logger.error("   This suggests the unified client API has changed")
                         logger.error("   Falling back to simulation mode")
+                    elif "refused" in error_msg.lower() or "timeout" in error_msg.lower():
+                        logger.warning(f"🔌 Connection refused/timeout: {error_msg}")
+                        if attempt >= 2:
+                            logger.warning("🔧 Server appears down, enabling simulation mode for training")
+                            self._mock_mode = True
                     else:
                         logger.warning(f"⚠️ Real connection error: {error_msg}")
                     
-                    # Fallback to simulation
-                    success = True
-                    if hasattr(self.client, '_connection_state'):
-                        self.client._connection_state = "CONNECTED"
+                    # Fallback to simulation if multiple attempts failed
+                    if attempt >= 2 or self._mock_mode:
+                        success = True
+                        if hasattr(self.client, '_connection_state'):
+                            self.client._connection_state = "CONNECTED"
 
                 if success:
                     self._connected = True
