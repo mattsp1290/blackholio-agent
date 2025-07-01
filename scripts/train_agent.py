@@ -23,6 +23,14 @@ import torch
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
+# Apply SpacetimeDB protocol fix before importing anything else
+try:
+    from src.blackholio_agent.environment.protocol_fix import apply_protocol_fixes
+    apply_protocol_fixes()
+    print("✅ Successfully applied comprehensive protocol fixes")
+except Exception as e:
+    print(f"Warning: Could not apply protocol fix: {e}")
+
 from src.blackholio_agent.training import PPOTrainer, PPOConfig
 
 logger = logging.getLogger(__name__)

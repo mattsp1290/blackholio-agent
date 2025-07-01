@@ -88,6 +88,18 @@ class ImprovedMockBlackholioConnection:
         self.config = config
         self._connected = False
         
+        # Required locks for base class compatibility
+        self._connection_lock = asyncio.Lock()
+        self._state_lock = Lock()
+        
+        # Game state like base class
+        self.game_state = GameState()
+        
+        # Connection callbacks
+        self._on_connected_callbacks = []
+        self._on_disconnected_callbacks = []
+        self._subscribed = False
+        
         # Mock-specific state
         self._mock_world_size = 1000
         self._mock_entities: Dict[int, MockEntity] = {}
@@ -425,5 +437,54 @@ class ImprovedMockBlackholioConnection:
                 self.game_state.food = food_list
                 self.game_state.timestamp = time.time()
         
-        # Notify listeners
-        self._notify_game_state_update()
+        # Notify listeners (removed recursive call)
+        pass
+    
+    def add_game_state_listener(self, callback):
+        """Add game state listener (compatibility method)."""
+        # Store the callback for future use
+        if not hasattr(self, '_game_state_listeners'):
+            self._game_state_listeners = []
+        self._game_state_listeners.append(callback)
+    
+    @property
+    def player_id(self) -> Optional[int]:
+        """Get current player ID (compatibility property)."""
+        return self.game_state.player_id
+    
+    @property
+    def player_identity(self) -> Optional[str]:
+        """Get current player identity (compatibility property)."""
+        return self.game_state.player_identity
+    
+    def get_player_entities(self):
+        """Get all entities owned by the current player."""
+        # Return mock entities that belong to the current player
+        if not self.game_state.player_id:
+            return []
+        
+        player_entities = []
+        with self._mock_lock:
+            for circle in self._mock_circles.values():
+                if circle.player_id == self.game_state.player_id:
+                    entity = self._mock_entities.get(circle.entity_id)
+                    if entity:
+                        player_entities.append({
+                            'entity_id': entity.entity_id,
+                            'x': entity.x,
+                            'y': entity.y,
+                            'mass': entity.mass
+                        })
+        return player_entities
+    
+    async def update_player_input(self, direction):
+        """Update player input direction."""
+        return await self._mock_update_input(direction)
+    
+    async def player_split(self):
+        """Split player action."""
+        return await self._mock_player_split()
+    
+    def get_update_rate(self) -> float:
+        """Get current update rate in Hz (mock implementation)."""
+        return 20.0  # Default mock update rate

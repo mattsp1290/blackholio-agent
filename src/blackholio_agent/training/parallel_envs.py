@@ -8,6 +8,9 @@ the same Blackholio server for efficient training.
 import asyncio
 import numpy as np
 import time
+import uuid
+import os
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass
 import logging
@@ -115,7 +118,9 @@ class AsyncEnvWorker:
         
         try:
             # Create environment with unique name and database identity
-            agent_name = f"{self.config.agent_name_prefix}_{self.env_id}_{int(time.time())}"
+            # Use UUID to ensure uniqueness across parallel workers instead of timestamp
+            unique_id = str(uuid.uuid4())[:8]  # First 8 chars of UUID for readability
+            agent_name = f"{self.config.agent_name_prefix}_{self.env_id}_{unique_id}"
             
             # Use same database identity for all workers (they should connect to same database)
             # Only the player name should be unique
@@ -227,6 +232,19 @@ class ParallelBlackholioEnv:
         self.episode_lengths = np.zeros(self.n_envs, dtype=int)
         
         logger.info(f"Initializing {self.n_envs} parallel Blackholio environments")
+        
+        # Clear SpacetimeDB credentials to ensure fresh identities for each environment
+        self._clear_spacetimedb_credentials()
+        
+    def _clear_spacetimedb_credentials(self):
+        """Clear SpacetimeDB credentials to force fresh identities for each environment worker."""
+        try:
+            credentials_path = Path.home() / '.spacetimedb' / 'credentials.json'
+            if credentials_path.exists():
+                logger.info("Clearing SpacetimeDB credentials to ensure fresh identities for parallel environments")
+                credentials_path.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to clear SpacetimeDB credentials: {e}")
         
     def start(self):
         """Start all environment workers"""
